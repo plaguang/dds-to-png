@@ -109,6 +109,18 @@ async function run() {
   const tgaMeta = await meta.innerText();
   assert(tgaMeta.includes("TGA") && tgaMeta.includes("16 × 16 px"), "成功解码上传的 32-bit .TGA 纹理 (16×16)");
 
+  // 6b. 验证导出 .ZIP 归档魔数 (PK\x03\x04 = 0x50 0x4B 0x03 0x04)
+  const [zipDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: /Export \.ZIP/i }).click(),
+  ]);
+  const zipPath = await zipDownload.path();
+  const zipBuf = fs.readFileSync(zipPath);
+  assert(
+    zipBuf[0] === 0x50 && zipBuf[1] === 0x4b && zipBuf[2] === 0x03 && zipBuf[3] === 0x04,
+    `导出的批量贴图 .ZIP 归档魔数正确 (${zipBuf.length} bytes)`
+  );
+
   // 7. 校验全部子路由及 SEO 路由 HTTP 200
   for (const route of ["/dds-viewer", "/tga-to-png", "/tga-viewer", "/sitemap.xml", "/robots.txt"]) {
     const res = await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });

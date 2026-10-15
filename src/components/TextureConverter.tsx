@@ -358,6 +358,130 @@ export function createDemoDdsBytes(w = 64, h = 64): ArrayBuffer {
   return buf;
 }
 
+// 零依赖生成标准无压缩 (STORE) ZIP 归档二进制，支持一键批量导出数十张转换后的 PNG/WebP 贴图
+function buildZipBytes(files: { name: string; data: Uint8Array }[]): Uint8Array {
+  const crcTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc32 = (buf: Uint8Array) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+
+  const enc = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const f of files) {
+    const nameBytes = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const size = f.data.length;
+
+    const local = new Uint8Array(30 + nameBytes.length + size);
+    const ldv = new DataView(local.buffer);
+    ldv.setUint32(0, 0x04034b50, true);
+    ldv.setUint16(4, 20, true);
+    ldv.setUint32(14, crc, true);
+    ldv.setUint32(18, size, true);
+    ldv.setUint32(22, size, true);
+    ldv.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    local.set(f.data, 30 + nameBytes.length);
+    localParts.push(local);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const cdv = new DataView(central.buffer);
+    cdv.setUint32(0, 0x02014b50, true);
+    cdv.setUint16(4, 20, true);
+    cdv.setUint16(6, 20, true);
+    cdv.setUint32(16, crc, true);
+    cdv.setUint32(20, size, true);
+    cdv.setUint32(24, size, true);
+    cdv.setUint16(28, nameBytes.length, true);
+    cdv.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    centralParts.push(central);
+
+    offset += local.length;
+  }
+
+  const centralSize = centralParts.reduce((s, p) => s + p.length, 0);
+  const eocd = new Uint8Array(22);
+  const edv = new DataView(eocd.buffer);
+  edv.setUint32(0, 0x06054b50, true);
+  edv.setUint16(8, files.length, true);
+  edv.setUint16(10, files.length, true);
+  edv.setUint32(12, centralSize, true);
+  edv.setUint32(16, offset, true);
+
+  const total = offset + centralSize + 22;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const p of localParts) {
+    out.set(p, pos);
+    pos += p.length;
+  }
+  for (const p of centralParts) {
+    out.set(p, pos);
+    pos += p.length;
+  }
+  out.set(eocd, pos);
+  return out;
+}
+
+function renderMipToCanvas(mip: MipLevel, channel: ChannelView, flipY: boolean, targetCanvas: HTMLCanvasElement) {
+  targetCanvas.width = mip.width;
+  targetCanvas.height = mip.height;
+  const ctx = targetCanvas.getContext("2d")!;
+  const imgData = ctx.createImageData(mip.width, mip.height);
+  const src = mip.rgba;
+  const dst = imgData.data;
+  const w = mip.width;
+  const h = mip.height;
+
+  for (let y = 0; y < h; y++) {
+    const sy = flipY ? h - 1 - y : y;
+    for (let x = 0; x < w; x++) {
+      const s = (sy * w + x) * 4;
+      const d = (y * w + x) * 4;
+      const r = src[s];
+      const g = src[s + 1];
+      const b = src[s + 2];
+      const a = src[s + 3];
+
+      if (channel === "rgba") {
+        dst[d] = r;
+        dst[d + 1] = g;
+        dst[d + 2] = b;
+        dst[d + 3] = a;
+      } else if (channel === "rgb") {
+        dst[d] = r;
+        dst[d + 1] = g;
+        dst[d + 2] = b;
+        dst[d + 3] = 255;
+      } else if (channel === "alpha") {
+        dst[d] = dst[d + 1] = dst[d + 2] = a;
+        dst[d + 3] = 255;
+      } else if (channel === "r") {
+        dst[d] = dst[d + 1] = dst[d + 2] = r;
+        dst[d + 3] = 255;
+      } else if (channel === "g") {
+        dst[d] = dst[d + 1] = dst[d + 2] = g;
+        dst[d + 3] = 255;
+      } else {
+        dst[d] = dst[d + 1] = dst[d + 2] = b;
+        dst[d + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
 export default function TextureConverter({
   primaryHint,
   defaultChannel = "rgba",
@@ -365,33 +489,51 @@ export default function TextureConverter({
   primaryHint?: string;
   defaultChannel?: ChannelView;
 } = {}) {
-  const [tex, setTex] = useState<DecodedTexture | null>(null);
+  const [batch, setBatch] = useState<DecodedTexture[]>([]);
+  const [activeIdx, setActiveIdx] = useState(0);
   const [mipIdx, setMipIdx] = useState(0);
   const [channel, setChannel] = useState<ChannelView>(defaultChannel);
   const [flipY, setFlipY] = useState(false);
   const [outFormat, setOutFormat] = useState<OutFormat>("image/png");
+  const [zoom, setZoom] = useState<number>(1);
   const [error, setError] = useState("");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  async function handleFile(file: File) {
+  const tex = batch[activeIdx] ?? null;
+
+  async function handleFiles(fileList: FileList | File[]) {
     setError("");
-    try {
-      const buf = await file.arrayBuffer();
-      const baseName = file.name.replace(/\.[^.]+$/, "");
-      const magic = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-      const isDds =
-        /\.dds$/i.test(file.name) ||
-        (magic.length === 4 && String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) === "DDS ");
-      const parsed = isDds ? parseDds(buf, baseName) : parseTga(buf, baseName);
-      setTex(parsed);
+    const arr = Array.from(fileList);
+    if (!arr.length) return;
+    const decodedList: DecodedTexture[] = [];
+    for (const file of arr) {
+      try {
+        const buf = await file.arrayBuffer();
+        const baseName = file.name.replace(/\.[^.]+$/, "");
+        const magic = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+        const isDds =
+          /\.dds$/i.test(file.name) ||
+          (magic.length === 4 && String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) === "DDS ");
+        const parsed = isDds ? parseDds(buf, baseName) : parseTga(buf, baseName);
+        decodedList.push(parsed);
+      } catch (e) {
+        setError((e as Error).message || `Could not decode ${file.name}`);
+      }
+    }
+    if (decodedList.length > 0) {
+      setBatch(decodedList);
+      setActiveIdx(0);
       setMipIdx(0);
       try {
-        track("texture_loaded", { format: parsed.format, width: parsed.width, height: parsed.height });
+        track("texture_loaded", {
+          count: decodedList.length,
+          format: decodedList[0].format,
+          width: decodedList[0].width,
+          height: decodedList[0].height,
+        });
       } catch {
         // ignore
       }
-    } catch (e) {
-      setError((e as Error).message || "Could not decode texture file.");
     }
   }
 
@@ -399,7 +541,8 @@ export default function TextureConverter({
     setError("");
     const buf = createDemoDdsBytes(64, 64);
     const parsed = parseDds(buf, "skyrim-armor-specular-dxt5");
-    setTex(parsed);
+    setBatch([parsed]);
+    setActiveIdx(0);
     setMipIdx(0);
     try {
       track("demo_dds_loaded");
@@ -413,51 +556,7 @@ export default function TextureConverter({
   useEffect(() => {
     const c = canvasRef.current;
     if (!c || !currentMip) return;
-    c.width = currentMip.width;
-    c.height = currentMip.height;
-    const ctx = c.getContext("2d")!;
-    const imgData = ctx.createImageData(currentMip.width, currentMip.height);
-    const src = currentMip.rgba;
-    const dst = imgData.data;
-    const w = currentMip.width;
-    const h = currentMip.height;
-
-    for (let y = 0; y < h; y++) {
-      const sy = flipY ? h - 1 - y : y;
-      for (let x = 0; x < w; x++) {
-        const s = (sy * w + x) * 4;
-        const d = (y * w + x) * 4;
-        const r = src[s];
-        const g = src[s + 1];
-        const b = src[s + 2];
-        const a = src[s + 3];
-
-        if (channel === "rgba") {
-          dst[d] = r;
-          dst[d + 1] = g;
-          dst[d + 2] = b;
-          dst[d + 3] = a;
-        } else if (channel === "rgb") {
-          dst[d] = r;
-          dst[d + 1] = g;
-          dst[d + 2] = b;
-          dst[d + 3] = 255;
-        } else if (channel === "alpha") {
-          dst[d] = dst[d + 1] = dst[d + 2] = a;
-          dst[d + 3] = 255;
-        } else if (channel === "r") {
-          dst[d] = dst[d + 1] = dst[d + 2] = r;
-          dst[d + 3] = 255;
-        } else if (channel === "g") {
-          dst[d] = dst[d + 1] = dst[d + 2] = g;
-          dst[d + 3] = 255;
-        } else {
-          dst[d] = dst[d + 1] = dst[d + 2] = b;
-          dst[d + 3] = 255;
-        }
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
+    renderMipToCanvas(currentMip, channel, flipY, c);
   }, [currentMip, channel, flipY]);
 
   function downloadConverted() {
@@ -484,6 +583,32 @@ export default function TextureConverter({
     );
   }
 
+  async function downloadBatchZip() {
+    if (!batch.length) return;
+    const ext = outFormat === "image/webp" ? "webp" : "png";
+    const offscreen = document.createElement("canvas");
+    const zipEntries: { name: string; data: Uint8Array }[] = [];
+
+    for (const item of batch) {
+      const mip = item.mips[0];
+      renderMipToCanvas(mip, channel, flipY, offscreen);
+      const blob = await new Promise<Blob | null>((res) => offscreen.toBlob(res, outFormat, 0.95));
+      if (blob) {
+        const ab = await blob.arrayBuffer();
+        zipEntries.push({ name: `${item.fileName}.${ext}`, data: new Uint8Array(ab) });
+      }
+    }
+
+    const zipBytes = buildZipBytes(zipEntries);
+    const zipBlob = new Blob([zipBytes as unknown as BlobPart], { type: "application/zip" });
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `textures-${channel}-${batch.length}files.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="flex flex-col gap-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       {error && (
@@ -497,18 +622,20 @@ export default function TextureConverter({
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault();
-              const f = e.dataTransfer.files[0];
-              if (f) handleFile(f);
+              if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files);
             }}
           >
             <input
               type="file"
+              multiple
               accept=".dds,.tga,image/vnd-ms.dds,image/x-targa,image/x-tga"
               className="hidden"
-              onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+              onChange={(e) => e.target.files?.length && handleFiles(e.target.files)}
             />
             <span className="text-4xl">🎮</span>
-            <span className="text-lg font-semibold">Drop a .DDS or .TGA texture file here (or click to browse)</span>
+            <span className="text-lg font-semibold">
+              Drop one or multiple .DDS / .TGA texture files here (Batch Supported)
+            </span>
             <span className="text-sm text-slate-500">
               {primaryHint ||
                 "Supports DXT1/BC1, DXT3/BC2, DXT5/BC3, BC4/ATI1, BC5/ATI2 Normal Maps, DX10 & RLE TGA · 100% Local In-Browser"}
@@ -526,6 +653,39 @@ export default function TextureConverter({
         </div>
       ) : (
         <div className="flex flex-col gap-4">
+          {/* 多文件批量切换栏 */}
+          {batch.length > 1 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-bold text-emerald-900">Batch Queue ({batch.length} files):</span>
+                {batch.map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setActiveIdx(idx);
+                      setMipIdx(0);
+                    }}
+                    className={`rounded-md px-2.5 py-1 font-medium ${
+                      activeIdx === idx
+                        ? "bg-emerald-700 text-white"
+                        : "bg-white text-slate-700 border border-slate-300 hover:bg-slate-100"
+                    }`}
+                  >
+                    {item.fileName} ({item.width}×{item.height})
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={downloadBatchZip}
+                className="rounded-lg bg-emerald-700 px-3 py-1.5 font-semibold text-white hover:bg-emerald-800"
+              >
+                📦 Download All ({batch.length}) as .ZIP
+              </button>
+            </div>
+          )}
+
           {/* 纹理元数据概览栏 */}
           <div
             className="grid grid-cols-2 gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 text-xs sm:grid-cols-4"
@@ -551,7 +711,7 @@ export default function TextureConverter({
             </div>
           </div>
 
-          {/* 通道检查器 + Mipmap 切换 + 导出控制栏 */}
+          {/* 通道检查器 + Mipmap 切换 + 缩放 + 导出控制栏 */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3.5 text-xs">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-semibold text-slate-600 mr-1">Channel:</span>
@@ -599,6 +759,21 @@ export default function TextureConverter({
                 </label>
               )}
 
+              <label className="flex items-center gap-1.5 font-medium text-slate-700">
+                <span>Zoom:</span>
+                <select
+                  aria-label="Zoom Scale"
+                  value={zoom}
+                  onChange={(e) => setZoom(Number(e.target.value))}
+                  className="rounded border border-slate-300 bg-white px-2 py-1"
+                >
+                  <option value={1}>1× Auto</option>
+                  <option value={2}>2× Pixel</option>
+                  <option value={4}>4× Grid</option>
+                  <option value={8}>8× Micro</option>
+                </select>
+              </label>
+
               <label className="inline-flex cursor-pointer items-center gap-1.5 font-medium text-slate-700">
                 <input type="checkbox" checked={flipY} onChange={(e) => setFlipY(e.target.checked)} />
                 Flip Vertical (Y)
@@ -621,13 +796,20 @@ export default function TextureConverter({
               Tip: If a game texture looks invisible or semi-transparent, switch Channel to{" "}
               <b>RGB Solid (Ignore Alpha)</b> before downloading.
             </span>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => setTex(null)}
+                onClick={() => setBatch([])}
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100"
               >
                 New Texture
+              </button>
+              <button
+                type="button"
+                onClick={downloadBatchZip}
+                className="rounded-lg border border-emerald-700 bg-emerald-50 px-3.5 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+              >
+                📦 Export .ZIP
               </button>
               <button
                 type="button"
@@ -641,7 +823,7 @@ export default function TextureConverter({
 
           {/* 棋盘格透明背景纹理画布 */}
           <div
-            className="flex min-h-64 items-center justify-center rounded-xl border border-slate-800 p-6"
+            className="flex min-h-64 items-center justify-center overflow-auto rounded-xl border border-slate-800 p-6"
             style={{
               backgroundImage:
                 "linear-gradient(45deg, #1e293b 25%, transparent 25%), linear-gradient(-45deg, #1e293b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #1e293b 75%), linear-gradient(-45deg, transparent 75%, #1e293b 75%)",
@@ -652,8 +834,11 @@ export default function TextureConverter({
           >
             <canvas
               ref={canvasRef}
-              className="max-h-[480px] w-auto rounded shadow-lg"
-              style={{ imageRendering: "pixelated", minWidth: "192px" }}
+              className="rounded shadow-lg"
+              style={{
+                imageRendering: "pixelated",
+                width: `${Math.max(192, (currentMip?.width ?? 64) * zoom)}px`,
+              }}
             />
           </div>
         </div>
