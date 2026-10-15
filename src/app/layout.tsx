@@ -24,6 +24,9 @@ export const metadata: Metadata = {
   description:
     "Convert DDS (DXT1, DXT3, DXT5, BC1-BC5, DX10) and TGA game textures to PNG or WebP directly in your browser. Inspect RGB without premultiplied alpha black-out, isolate R/G/B/A channels, and preview mipmap chains.",
   alternates: { canonical: "/" },
+  verification: {
+    google: "OzbbXwBKIAGRAIV-NCTTfkOO6b3YAXZjqWxCrmygypM",
+  },
   openGraph: {
     title: "DDS & TGA to PNG Converter Online Free – Game Texture Inspector",
     description:
