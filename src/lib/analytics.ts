@@ -9,6 +9,38 @@ declare global {
   }
 }
 
+export function isAutomatedOrInternalSession(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return true;
+  }
+  try {
+    if (navigator.webdriver === true) return true;
+    const ua = navigator.userAgent || "";
+    if (/HeadlessChrome|Playwright|Puppeteer|PhantomJS|Cypress|Lighthouse/i.test(ua)) {
+      return true;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("e2e") === "1" || params.get("internal") === "1" || params.get("no_track") === "1") {
+      try {
+        window.localStorage.setItem("ignore_analytics", "1");
+      } catch {
+        // ignore
+      }
+      return true;
+    }
+    try {
+      if (window.localStorage.getItem("ignore_analytics") === "1") {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export type ToolEventName =
   | "texture_file_upload"
   | "texture_demo_load"
@@ -17,11 +49,11 @@ export type ToolEventName =
   | "texture_download_png"
   | "texture_download_webp";
 
-// 统一向 Vercel Analytics、Google Analytics 4 (GA4) 与 Microsoft Clarity 发送工具交互埋点
 export function trackToolEvent(
   event: ToolEventName,
   props?: Record<string, string | number | boolean>
 ) {
+  if (isAutomatedOrInternalSession()) return;
   try {
     track(event, props);
   } catch {
