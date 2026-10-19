@@ -48,9 +48,9 @@ async function run() {
   const title = await page.title();
   assert(title.includes("DDS to PNG"), `页面标题正确 (${title})`);
 
-  // 1. 顶部吸顶导航包含全部 4 个工具入口
+  // 1. 顶部吸顶导航包含全部 6 个工具入口
   const navCount = await page.locator("header nav a").count();
-  assert(navCount === 4, `顶部吸顶导航包含全部 4 个工具入口 (实际 ${navCount})`);
+  assert(navCount === 6, `顶部吸顶导航包含全部 6 个工具入口 (实际 ${navCount})`);
 
   // 2. 验证自动化测试环境已屏蔽统计污染
   const isBlocked = await page.evaluate(() => navigator.webdriver === true && typeof window.gtag === "undefined");
@@ -93,7 +93,17 @@ async function run() {
     `导出的 .PNG 文件头魔数正确 (${dlBuf.length} bytes)`
   );
 
-  // 6. 点击 New Texture 并上传自定义 32-bit .TGA 二进制文件
+  // 6. 点击 New Texture 并测试 Valve Source Engine .VTF v7.2 纹理加载与反向 Mipmap 解码
+  await page.getByRole("button", { name: "New Texture" }).click();
+  await page.getByRole("button", { name: /Load Demo Source Engine \.VTF Texture/i }).click();
+  await meta.waitFor({ state: "visible", timeout: 5000 });
+  const vtfMeta = await meta.innerText();
+  assert(
+    vtfMeta.includes("VTF v7.2 (DXT5)") && vtfMeta.includes("64 × 64 px") && vtfMeta.includes("2 level(s)"),
+    `成功解码 Valve Source .VTF v7.2 (DXT5) 纹理与 2 级反向 Mipmap (${vtfMeta.replace(/\s+/g, " ")})`
+  );
+
+  // 6b. 点击 New Texture 并上传自定义 32-bit .TGA 二进制文件
   await page.getByRole("button", { name: "New Texture" }).click();
   const tgaBuf = buildTestTgaBuffer(16, 16);
   const fileInput = page.locator('input[type="file"]');
@@ -107,7 +117,7 @@ async function run() {
   const tgaMeta = await meta.innerText();
   assert(tgaMeta.includes("TGA") && tgaMeta.includes("16 × 16 px"), "成功解码上传的 32-bit .TGA 纹理 (16×16)");
 
-  // 6b. 验证导出 .ZIP 归档魔数 (PK\x03\x04 = 0x50 0x4B 0x03 0x04)
+  // 6c. 验证导出 .ZIP 归档魔数 (PK\x03\x04 = 0x50 0x4B 0x03 0x04)
   const [zipDownload] = await Promise.all([
     page.waitForEvent("download"),
     page.getByRole("button", { name: /Export \.ZIP/i }).click(),
@@ -120,7 +130,7 @@ async function run() {
   );
 
   // 7. 校验全部子路由及 SEO 路由 HTTP 200
-  for (const route of ["/dds-viewer", "/tga-to-png", "/tga-viewer", "/sitemap.xml", "/robots.txt"]) {
+  for (const route of ["/dds-viewer", "/vtf-to-png", "/vtf-viewer", "/tga-to-png", "/tga-viewer", "/sitemap.xml", "/robots.txt"]) {
     const res = await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
     assert(res && res.status() === 200, `路由 ${route} 返回 HTTP 200`);
   }

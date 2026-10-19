@@ -307,6 +307,224 @@ export function parseTga(buf: ArrayBuffer, fileName: string): DecodedTexture {
   };
 }
 
+// 解析 Valve Source 引擎 .VTF (Valve Texture File v7.0 - v7.5) 二进制纹理
+function parseVtf(buf: ArrayBuffer, fileName: string): DecodedTexture {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  if (u8.length < 64 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== "VTF\0") {
+    throw new Error("Invalid VTF header (missing VTF\\0 signature)");
+  }
+
+  const verMajor = dv.getUint32(4, true);
+  const verMinor = dv.getUint32(8, true);
+  const headerSize = dv.getUint32(12, true);
+  const width = dv.getUint16(16, true);
+  const height = dv.getUint16(18, true);
+  const frames = Math.max(1, dv.getUint16(24, true));
+  const highResFormat = dv.getInt32(52, true);
+  const mipmapCount = Math.max(1, u8[56]);
+  const lowResFormat = dv.getInt32(57, true);
+  const lowResW = u8[61];
+  const lowResH = u8[62];
+  const depth = verMajor >= 7 && verMinor >= 2 && headerSize >= 65 ? Math.max(1, dv.getUint16(63, true)) : 1;
+
+  // 计算低分辨率缩略图字节数（通常为 DXT1 = 13）
+  let lowResBytes = 0;
+  if (lowResW > 0 && lowResH > 0 && lowResFormat === 13) {
+    lowResBytes = Math.max(1, Math.ceil(lowResW / 4)) * Math.max(1, Math.ceil(lowResH / 4)) * 8;
+  }
+
+  // Source VTF 图像格式枚举映射
+  const fmtInfo = (fmt: number): { name: string; bytesPerMip: (w: number, h: number) => number } => {
+    const bw = (w: number) => Math.max(1, Math.ceil(w / 4));
+    const bh = (h: number) => Math.max(1, Math.ceil(h / 4));
+    switch (fmt) {
+      case 0:
+        return { name: "RGBA8888", bytesPerMip: (w, h) => w * h * 4 };
+      case 1:
+        return { name: "ABGR8888", bytesPerMip: (w, h) => w * h * 4 };
+      case 2:
+        return { name: "RGB888", bytesPerMip: (w, h) => w * h * 3 };
+      case 3:
+      case 12:
+        return { name: "BGR888", bytesPerMip: (w, h) => w * h * 3 };
+      case 13:
+      case 20:
+        return { name: "DXT1", bytesPerMip: (w, h) => bw(w) * bh(h) * 8 };
+      case 14:
+        return { name: "DXT3", bytesPerMip: (w, h) => bw(w) * bh(h) * 16 };
+      case 15:
+        return { name: "DXT5", bytesPerMip: (w, h) => bw(w) * bh(h) * 16 };
+      case 16:
+      case 19:
+        return { name: "BGRA8888", bytesPerMip: (w, h) => w * h * 4 };
+      default:
+        throw new Error(`Unsupported VTF pixel format ID (${fmt})`);
+    }
+  };
+
+  const info = fmtInfo(highResFormat);
+
+  // VTF Mipmap 按从小到大（Smallest -> Largest, Frame -> Face -> Slice）排列在文件末尾
+  // 构建从 Mip N-1 到 Mip 0 的尺寸表
+  const mipDims: { level: number; w: number; h: number; byteLen: number }[] = [];
+  for (let level = 0; level < mipmapCount; level++) {
+    const mw = Math.max(1, width >> level);
+    const mh = Math.max(1, height >> level);
+    mipDims.push({ level, w: mw, h: mh, byteLen: info.bytesPerMip(mw, mh) });
+  }
+
+  // 计算高分辨率数据起始偏移：优先使用 headerSize + lowResBytes，若存在 7.3+ 资源目录则从文件尾部反推
+  let totalHighResBytes = 0;
+  for (const m of mipDims) {
+    totalHighResBytes += m.byteLen * frames * depth;
+  }
+  let pos = headerSize + lowResBytes;
+  if (pos + totalHighResBytes > u8.length && u8.length >= totalHighResBytes) {
+    pos = u8.length - totalHighResBytes;
+  }
+
+  const mips: MipLevel[] = [];
+  // 从最小 Mip (mipmapCount - 1) 顺序读取到最大 Mip (0)
+  for (let i = mipDims.length - 1; i >= 0; i--) {
+    const { level, w: mw, h: mh, byteLen } = mipDims[i];
+    if (pos + byteLen > u8.length) break;
+    const rgba = new Uint8ClampedArray(mw * mh * 4);
+    const bw = Math.max(1, Math.ceil(mw / 4));
+    const bh = Math.max(1, Math.ceil(mh / 4));
+
+    if (highResFormat === 13 || highResFormat === 20) {
+      let p = pos;
+      for (let by = 0; by < bh; by++) {
+        for (let bx = 0; bx < bw; bx++) {
+          decodeBc1Block(u8, p, rgba, bx * 4, by * 4, mw, mh, false);
+          p += 8;
+        }
+      }
+    } else if (highResFormat === 15) {
+      let p = pos;
+      for (let by = 0; by < bh; by++) {
+        for (let bx = 0; bx < bw; bx++) {
+          decodeBc3AlphaBlock(u8, p, rgba, bx * 4, by * 4, mw, mh, 3);
+          decodeBc1Block(u8, p + 8, rgba, bx * 4, by * 4, mw, mh, true);
+          p += 16;
+        }
+      }
+    } else if (highResFormat === 14) {
+      let p = pos;
+      for (let by = 0; by < bh; by++) {
+        for (let bx = 0; bx < bw; bx++) {
+          decodeBc1Block(u8, p + 8, rgba, bx * 4, by * 4, mw, mh, true);
+          for (let py = 0; py < 4; py++) {
+            const y = by * 4 + py;
+            if (y >= mh) continue;
+            const rowWord = u8[p + py * 2] | (u8[p + py * 2 + 1] << 8);
+            for (let px = 0; px < 4; px++) {
+              const x = bx * 4 + px;
+              if (x < mw) rgba[(y * mw + x) * 4 + 3] = ((rowWord >>> (px * 4)) & 0x0f) * 17;
+            }
+          }
+          p += 16;
+        }
+      }
+    } else if (highResFormat === 0) {
+      for (let px = 0; px < mw * mh; px++) {
+        const s = pos + px * 4;
+        const d = px * 4;
+        rgba[d] = u8[s];
+        rgba[d + 1] = u8[s + 1];
+        rgba[d + 2] = u8[s + 2];
+        rgba[d + 3] = u8[s + 3];
+      }
+    } else if (highResFormat === 16 || highResFormat === 19) {
+      for (let px = 0; px < mw * mh; px++) {
+        const s = pos + px * 4;
+        const d = px * 4;
+        rgba[d] = u8[s + 2];
+        rgba[d + 1] = u8[s + 1];
+        rgba[d + 2] = u8[s];
+        rgba[d + 3] = highResFormat === 19 ? 255 : u8[s + 3];
+      }
+    } else if (highResFormat === 2 || highResFormat === 3 || highResFormat === 12) {
+      const isBgr = highResFormat !== 2;
+      for (let px = 0; px < mw * mh; px++) {
+        const s = pos + px * 3;
+        const d = px * 4;
+        rgba[d] = isBgr ? u8[s + 2] : u8[s];
+        rgba[d + 1] = u8[s + 1];
+        rgba[d + 2] = isBgr ? u8[s] : u8[s + 2];
+        rgba[d + 3] = 255;
+      }
+    }
+
+    mips.unshift({ level, width: mw, height: mh, rgba });
+    pos += byteLen * frames * depth;
+  }
+
+  return {
+    fileName,
+    format: `VTF v${verMajor}.${verMinor} (${info.name})`,
+    width,
+    height,
+    mips,
+    fileSize: u8.length,
+  };
+}
+
+// 生成内置演示 Valve Source 引擎 VTF v7.2 DXT5 纹理（含 2 级小->大 Mipmap）
+export function createDemoVtfBytes(w = 64, h = 64): ArrayBuffer {
+  const headerSize = 80;
+  const mip1Bytes = (w / 2 / 4) * (h / 2 / 4) * 16; // 32x32 DXT5 = 1024 B
+  const mip0Bytes = (w / 4) * (h / 4) * 16; // 64x64 DXT5 = 4096 B
+  const buf = new ArrayBuffer(headerSize + mip1Bytes + mip0Bytes);
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+
+  // "VTF\0" signature
+  u8.set([0x56, 0x54, 0x46, 0x00], 0);
+  dv.setUint32(4, 7, true); // major 7
+  dv.setUint32(8, 2, true); // minor 2
+  dv.setUint32(12, headerSize, true);
+  dv.setUint16(16, w, true);
+  dv.setUint16(18, h, true);
+  dv.setUint32(20, 0x2000, true); // flags (eight bit alpha)
+  dv.setUint16(24, 1, true); // 1 frame
+  dv.setInt32(52, 15, true); // IMAGE_FORMAT_DXT5 = 15
+  u8[56] = 2; // 2 mipmap levels
+  dv.setInt32(57, -1, true); // no low-res thumbnail
+  u8[61] = 0;
+  u8[62] = 0;
+  dv.setUint16(63, 1, true); // depth = 1
+
+  const fillMip = (off: number, mw: number, mh: number) => {
+    const mbw = mw / 4;
+    const mbh = mh / 4;
+    for (let by = 0; by < mbh; by++) {
+      for (let bx = 0; bx < mbw; bx++) {
+        const p = off + (by * mbw + bx) * 16;
+        const checker = ((bx >> 1) + (by >> 1)) % 2 === 0;
+        const alpha = checker ? 255 : 140;
+        u8[p] = alpha;
+        u8[p + 1] = alpha;
+        // Source Engine orange/amber metallic hazard pattern in RGB565
+        const r5 = checker ? 30 : 6;
+        const g6 = checker ? 36 : 12;
+        const b5 = checker ? 4 : 8;
+        const c0 = (r5 << 11) | (g6 << 5) | b5;
+        const c1 = ((r5 >> 1) << 11) | ((g6 >> 1) << 5) | b5;
+        dv.setUint16(p + 8, c0, true);
+        dv.setUint16(p + 10, c1, true);
+        dv.setUint32(p + 12, 0x00000000, true);
+      }
+    }
+  };
+
+  // VTF stores smallest mip first (Mip 1: 32x32), then largest mip (Mip 0: 64x64)
+  fillMip(headerSize, w / 2, h / 2);
+  fillMip(headerSize + mip1Bytes, w, h);
+  return buf;
+}
+
 // 生成内置演示 DXT5 .DDS 二进制纹理（含 2 级 Mipmap 与 Alpha 通道遮罩）
 export function createDemoDdsBytes(w = 64, h = 64): ArrayBuffer {
   const bw = w / 4;
@@ -511,10 +729,15 @@ export default function TextureConverter({
         const buf = await file.arrayBuffer();
         const baseName = file.name.replace(/\.[^.]+$/, "");
         const magic = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-        const isDds =
-          /\.dds$/i.test(file.name) ||
-          (magic.length === 4 && String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) === "DDS ");
-        const parsed = isDds ? parseDds(buf, baseName) : parseTga(buf, baseName);
+        const magicStr =
+          magic.length === 4 ? String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) : "";
+        const isDds = /\.dds$/i.test(file.name) || magicStr === "DDS ";
+        const isVtf = /\.vtf$/i.test(file.name) || magicStr === "VTF\0";
+        const parsed = isDds
+          ? parseDds(buf, baseName)
+          : isVtf
+          ? parseVtf(buf, baseName)
+          : parseTga(buf, baseName);
         decodedList.push(parsed);
       } catch (e) {
         setError((e as Error).message || `Could not decode ${file.name}`);
@@ -524,16 +747,6 @@ export default function TextureConverter({
       setBatch(decodedList);
       setActiveIdx(0);
       setMipIdx(0);
-      try {
-        track("texture_loaded", {
-          count: decodedList.length,
-          format: decodedList[0].format,
-          width: decodedList[0].width,
-          height: decodedList[0].height,
-        });
-      } catch {
-        // ignore
-      }
     }
   }
 
@@ -544,11 +757,15 @@ export default function TextureConverter({
     setBatch([parsed]);
     setActiveIdx(0);
     setMipIdx(0);
-    try {
-      track("demo_dds_loaded");
-    } catch {
-      // ignore
-    }
+  }
+
+  function loadDemoVtf() {
+    setError("");
+    const buf = createDemoVtfBytes(64, 64);
+    const parsed = parseVtf(buf, "hl2-hazard-stripe-vtf72");
+    setBatch([parsed]);
+    setActiveIdx(0);
+    setMipIdx(0);
   }
 
   const currentMip = tex?.mips[Math.min(mipIdx, (tex?.mips.length ?? 1) - 1)] ?? null;
@@ -572,11 +789,6 @@ export default function TextureConverter({
         a.download = `${tex.fileName}.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
-        try {
-          track("texture_exported", { format: tex.format, ext, channel });
-        } catch {
-          // ignore
-        }
       },
       outFormat,
       0.95
@@ -628,26 +840,33 @@ export default function TextureConverter({
             <input
               type="file"
               multiple
-              accept=".dds,.tga,image/vnd-ms.dds,image/x-targa,image/x-tga"
+              accept=".dds,.tga,.vtf,image/vnd-ms.dds,image/x-targa,image/x-tga,image/vnd.valve.source.texture"
               className="hidden"
               onChange={(e) => e.target.files?.length && handleFiles(e.target.files)}
             />
             <span className="text-4xl">🎮</span>
             <span className="text-lg font-semibold">
-              Drop one or multiple .DDS / .TGA texture files here (Batch Supported)
+              Drop one or multiple .DDS / .VTF / .TGA texture files here (Batch Supported)
             </span>
             <span className="text-sm text-slate-500">
               {primaryHint ||
-                "Supports DXT1/BC1, DXT3/BC2, DXT5/BC3, BC4/ATI1, BC5/ATI2 Normal Maps, DX10 & RLE TGA · 100% Local In-Browser"}
+                "Supports DDS (DXT1-DXT5, BC1-BC5, DX10), Valve Source VTF (v7.0-v7.5) & RLE TGA · 100% Local In-Browser"}
             </span>
           </label>
-          <div className="flex justify-center">
+          <div className="flex flex-wrap justify-center gap-2.5">
             <button
               type="button"
               onClick={loadDemoDds}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
             >
               ✨ Load Demo DXT5 .DDS Texture (With Alpha Mask &amp; Mipmaps)
+            </button>
+            <button
+              type="button"
+              onClick={loadDemoVtf}
+              className="rounded-lg border border-amber-300 bg-amber-50/70 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
+            >
+              🟠 Load Demo Source Engine .VTF Texture (v7.2 DXT5)
             </button>
           </div>
         </div>

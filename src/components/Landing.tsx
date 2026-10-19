@@ -18,6 +18,8 @@ export interface LandingConfig {
 const NAV_LINKS = [
   { href: "/", label: "DDS to PNG" },
   { href: "/dds-viewer", label: "DDS Viewer" },
+  { href: "/vtf-to-png", label: "VTF to PNG" },
+  { href: "/vtf-viewer", label: "VTF Viewer" },
   { href: "/tga-to-png", label: "TGA to PNG" },
   { href: "/tga-viewer", label: "TGA Viewer" },
 ];
