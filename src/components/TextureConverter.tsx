@@ -1173,7 +1173,7 @@ export default function TextureConverter({
       {!tex ? (
         <div className="flex flex-col gap-4">
           <label
-            className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-10 text-center transition hover:border-indigo-600"
+            className="relative flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 sm:p-10 text-center transition hover:border-indigo-600 active:scale-[0.99]"
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault();
@@ -1184,14 +1184,17 @@ export default function TextureConverter({
               type="file"
               multiple
               accept=".dds,.tga,.vtf,.exr,.hdr,image/vnd-ms.dds,image/x-targa,image/x-tga,image/vnd.valve.source.texture,image/x-exr,image/vnd.radiance"
-              className="hidden"
+              className="sr-only"
               onChange={(e) => e.target.files?.length && handleFiles(e.target.files)}
             />
-            <span className="text-4xl">🎮</span>
-            <span className="text-lg font-semibold">
+            <span className="pointer-events-none text-4xl">🎮</span>
+            <span className="pointer-events-none text-lg font-semibold">
               Drop one or multiple .DDS / .VTF / .EXR / .HDR / .TGA texture files here (Batch Supported)
             </span>
-            <span className="text-sm text-slate-500">
+            <span className="pointer-events-none inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-xs">
+              📂 Tap or Click Here to Select Texture Files
+            </span>
+            <span className="pointer-events-none text-sm text-slate-500">
               {primaryHint ||
                 "Supports DDS (DXT1-DXT5, BC1-BC5, DX10), Valve VTF, OpenEXR (.exr), Radiance (.hdr) & RLE TGA · 100% Local In-Browser"}
             </span>

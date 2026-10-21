@@ -47,7 +47,8 @@ export type ToolEventName =
   | "texture_channel_switch"
   | "texture_mipmap_switch"
   | "texture_download_png"
-  | "texture_download_webp";
+  | "texture_download_webp"
+  | "user_feedback";
 
 export function trackToolEvent(
   event: ToolEventName,

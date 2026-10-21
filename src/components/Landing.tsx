@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TextureConverter from "./TextureConverter";
+import FeedbackBar from "./FeedbackBar";
 
 export interface LandingConfig {
   h1: string;
@@ -112,11 +113,12 @@ export default function Landing({ config }: { config: LandingConfig }) {
         </section>
 
         {/* Interactive Converter & Channel/Mipmap Inspector */}
-        <section aria-label="DDS and TGA Texture Converter">
+        <section aria-label="DDS and TGA Texture Converter" className="space-y-4">
           <TextureConverter
             primaryHint={config.primaryHint}
             defaultChannel={config.defaultChannel}
           />
+          <FeedbackBar toolName="Texture Converter & Viewer" theme="light" />
         </section>
 
         {/* How It Works */}
