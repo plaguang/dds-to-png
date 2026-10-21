@@ -20,6 +20,9 @@ const NAV_LINKS = [
   { href: "/dds-viewer", label: "DDS Viewer" },
   { href: "/vtf-to-png", label: "VTF to PNG" },
   { href: "/vtf-viewer", label: "VTF Viewer" },
+  { href: "/exr-to-png", label: "EXR to PNG" },
+  { href: "/exr-viewer", label: "EXR Viewer" },
+  { href: "/hdr-to-png", label: "HDR to PNG" },
   { href: "/tga-to-png", label: "TGA to PNG" },
   { href: "/tga-viewer", label: "TGA Viewer" },
 ];

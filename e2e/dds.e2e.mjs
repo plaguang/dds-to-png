@@ -48,9 +48,9 @@ async function run() {
   const title = await page.title();
   assert(title.includes("DDS to PNG"), `页面标题正确 (${title})`);
 
-  // 1. 顶部吸顶导航包含全部 6 个工具入口
+  // 1. 顶部吸顶导航包含全部 9 个工具入口
   const navCount = await page.locator("header nav a").count();
-  assert(navCount === 6, `顶部吸顶导航包含全部 6 个工具入口 (实际 ${navCount})`);
+  assert(navCount === 9, `顶部吸顶导航包含全部 9 个工具入口 (实际 ${navCount})`);
 
   // 2. 验证自动化测试环境已屏蔽统计污染
   const isBlocked = await page.evaluate(() => navigator.webdriver === true && typeof window.gtag === "undefined");
@@ -103,6 +103,16 @@ async function run() {
     `成功解码 Valve Source .VTF v7.2 (DXT5) 纹理与 2 级反向 Mipmap (${vtfMeta.replace(/\s+/g, " ")})`
   );
 
+  // 6a-2. 点击 New Texture 并测试 OpenEXR (.EXR) 16-bit Half-Float 样本加载与 ACES 色调映射
+  await page.getByRole("button", { name: "New Texture" }).click();
+  await page.getByRole("button", { name: /Load Demo OpenEXR \(\.EXR\) 16-bit HDR Sky/i }).click();
+  await meta.waitFor({ state: "visible", timeout: 5000 });
+  const exrMeta = await meta.innerText();
+  assert(
+    exrMeta.includes("OpenEXR (BGR 16-bit Half-Float)") && exrMeta.includes("64 × 64 px"),
+    `成功解码 OpenEXR 16-bit Half-Float HDR 纹理 (${exrMeta.replace(/\s+/g, " ")})`
+  );
+
   // 6b. 点击 New Texture 并上传自定义 32-bit .TGA 二进制文件
   await page.getByRole("button", { name: "New Texture" }).click();
   const tgaBuf = buildTestTgaBuffer(16, 16);
@@ -130,7 +140,18 @@ async function run() {
   );
 
   // 7. 校验全部子路由及 SEO 路由 HTTP 200
-  for (const route of ["/dds-viewer", "/vtf-to-png", "/vtf-viewer", "/tga-to-png", "/tga-viewer", "/sitemap.xml", "/robots.txt"]) {
+  for (const route of [
+    "/dds-viewer",
+    "/vtf-to-png",
+    "/vtf-viewer",
+    "/exr-to-png",
+    "/exr-viewer",
+    "/hdr-to-png",
+    "/tga-to-png",
+    "/tga-viewer",
+    "/sitemap.xml",
+    "/robots.txt",
+  ]) {
     const res = await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
     assert(res && res.status() === 200, `路由 ${route} 返回 HTTP 200`);
   }

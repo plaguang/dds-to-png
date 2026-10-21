@@ -8,12 +8,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/dds-viewer",
     "/vtf-to-png",
     "/vtf-viewer",
+    "/exr-to-png",
+    "/exr-viewer",
+    "/hdr-to-png",
     "/tga-to-png",
     "/tga-viewer",
   ];
   return routes.map((r) => ({
     url: `${BASE}${r}`,
-    lastModified: "2026-10-19",
+    lastModified: "2026-10-21",
     changeFrequency: "weekly",
     priority: r === "" ? 1.0 : 0.9,
   }));

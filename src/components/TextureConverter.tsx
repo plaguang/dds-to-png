@@ -525,6 +525,325 @@ export function createDemoVtfBytes(w = 64, h = 64): ArrayBuffer {
   return buf;
 }
 
+// IEEE 754 Half-Float (16-bit) 转 32-bit Float
+function decodeFloat16(h: number): number {
+  const s = (h & 0x8000) >> 15;
+  const e = (h & 0x7c00) >> 10;
+  const f = h & 0x03ff;
+  if (e === 0) {
+    return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+  } else if (e === 0x1f) {
+    return f ? NaN : (s ? -Infinity : Infinity);
+  }
+  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+}
+
+// ACES Filmic 色调映射 + sRGB Gamma (2.2) 转换，将 HDR 线性亮度转为 0-255 LDR
+function acesTonemapToByte(linearVal: number, exposureEv = 0): number {
+  const x = Math.max(0, linearVal * Math.pow(2, exposureEv));
+  const a = 2.51;
+  const b = 0.03;
+  const c = 2.43;
+  const d = 0.59;
+  const e = 0.14;
+  const mapped = Math.min(1, Math.max(0, (x * (a * x + b)) / (x * (c * x + d) + e)));
+  return Math.round(Math.pow(mapped, 1 / 2.2) * 255);
+}
+
+// 解析 Radiance RGBE (.HDR / .PIC) 环境贴图（支持未压缩与新式自适应 RLE）
+function parseHdr(buf: ArrayBuffer, fileName: string, exposureEv = 0): DecodedTexture {
+  const u8 = new Uint8Array(buf);
+  let pos = 0;
+  const readLine = (): string => {
+    let line = "";
+    while (pos < u8.length) {
+      const ch = u8[pos++];
+      if (ch === 0x0a) break;
+      if (ch !== 0x0d) line += String.fromCharCode(ch);
+    }
+    return line;
+  };
+
+  const firstLine = readLine();
+  if (!firstLine.startsWith("#?RADIANCE") && !firstLine.startsWith("#?RGBE")) {
+    throw new Error("Invalid Radiance .HDR header (missing #?RADIANCE signature)");
+  }
+
+  // 读取头部属性直到空行
+  while (pos < u8.length) {
+    const l = readLine();
+    if (l.trim() === "") break;
+  }
+
+  // 读取分辨率行，如 "-Y 64 +X 128"
+  const resLine = readLine();
+  const m = resLine.match(/[-+]Y\s+(\d+)\s+[-+]X\s+(\d+)/i);
+  if (!m) {
+    throw new Error(`Invalid .HDR resolution string (${resLine})`);
+  }
+  const height = parseInt(m[1], 10);
+  const width = parseInt(m[2], 10);
+
+  const rgbe = new Uint8Array(width * height * 4);
+
+  for (let y = 0; y < height && pos < u8.length; y++) {
+    const b0 = u8[pos];
+    const b1 = u8[pos + 1];
+    const b2 = u8[pos + 2];
+    const b3 = u8[pos + 3];
+
+    // 自适应 RLE 扫描线标志：b0==2 && b1==2 && ((b2<<8)|b3) == width
+    if (b0 === 2 && b1 === 2 && ((b2 << 8) | b3) === width) {
+      pos += 4;
+      for (let ch = 0; ch < 4; ch++) {
+        let x = 0;
+        while (x < width && pos < u8.length) {
+          const code = u8[pos++];
+          if (code > 128) {
+            const runLen = code - 128;
+            const val = u8[pos++];
+            for (let k = 0; k < runLen && x < width; k++, x++) {
+              rgbe[(y * width + x) * 4 + ch] = val;
+            }
+          } else {
+            for (let k = 0; k < code && x < width && pos < u8.length; k++, x++) {
+              rgbe[(y * width + x) * 4 + ch] = u8[pos++];
+            }
+          }
+        }
+      }
+    } else {
+      // 未压缩直排 RGBE
+      for (let x = 0; x < width && pos + 4 <= u8.length; x++) {
+        const d = (y * width + x) * 4;
+        rgbe[d] = u8[pos++];
+        rgbe[d + 1] = u8[pos++];
+        rgbe[d + 2] = u8[pos++];
+        rgbe[d + 3] = u8[pos++];
+      }
+    }
+  }
+
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const s = i * 4;
+    const exp = rgbe[s + 3];
+    if (exp === 0) {
+      rgba[s] = rgba[s + 1] = rgba[s + 2] = 0;
+      rgba[s + 3] = 255;
+    } else {
+      const scale = Math.pow(2, exp - 128 - 8);
+      rgba[s] = acesTonemapToByte((rgbe[s] + 0.5) * scale, exposureEv);
+      rgba[s + 1] = acesTonemapToByte((rgbe[s + 1] + 0.5) * scale, exposureEv);
+      rgba[s + 2] = acesTonemapToByte((rgbe[s + 2] + 0.5) * scale, exposureEv);
+      rgba[s + 3] = 255;
+    }
+  }
+
+  return {
+    fileName,
+    format: "HDR (Radiance RGBE 32-bit Float)",
+    width,
+    height,
+    mips: [{ level: 0, width, height, rgba }],
+    fileSize: u8.length,
+  };
+}
+
+// 解析 OpenEXR (.EXR v2 未压缩扫描线 Half-Float / Float) 高动态范围纹理
+function parseExr(buf: ArrayBuffer, fileName: string, exposureEv = 0): DecodedTexture {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  if (u8.length < 32 || dv.getUint32(0, true) !== 20000630) {
+    throw new Error("Invalid OpenEXR file (missing 0x762f3101 magic number)");
+  }
+
+  let pos = 8;
+  let width = 64;
+  let height = 64;
+  const channels: { name: string; pType: number }[] = [];
+
+  const readCString = (): string => {
+    let s = "";
+    while (pos < u8.length && u8[pos] !== 0) {
+      s += String.fromCharCode(u8[pos++]);
+    }
+    pos++; // skip null
+    return s;
+  };
+
+  while (pos < u8.length) {
+    const attrName = readCString();
+    if (attrName === "") break; // End of header
+    const attrType = readCString();
+    const attrSize = dv.getInt32(pos, true);
+    pos += 4;
+    const nextPos = pos + attrSize;
+
+    if (attrName === "dataWindow" || (attrName === "displayWindow" && width === 64)) {
+      const xMin = dv.getInt32(pos, true);
+      const yMin = dv.getInt32(pos + 4, true);
+      const xMax = dv.getInt32(pos + 8, true);
+      const yMax = dv.getInt32(pos + 12, true);
+      width = Math.max(1, xMax - xMin + 1);
+      height = Math.max(1, yMax - yMin + 1);
+    } else if (attrName === "channels" && attrType === "chlist") {
+      while (pos < nextPos && u8[pos] !== 0) {
+        const chName = readCString();
+        const pType = dv.getInt32(pos, true); // 1 = HALF (16-bit), 2 = FLOAT (32-bit)
+        pos += 16;
+        channels.push({ name: chName.toUpperCase(), pType });
+      }
+    }
+    pos = nextPos;
+  }
+
+  if (channels.length === 0) {
+    channels.push({ name: "B", pType: 1 }, { name: "G", pType: 1 }, { name: "R", pType: 1 });
+  }
+
+  // 跳过 line offset table (height * 8 bytes)
+  const offsetTableEnd = pos + height * 8;
+  if (offsetTableEnd < u8.length) {
+    pos = offsetTableEnd;
+  }
+
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) rgba[i * 4 + 3] = 255;
+
+  for (let y = 0; y < height && pos + 8 <= u8.length; y++) {
+    const scanY = dv.getInt32(pos, true);
+    const dataSize = dv.getInt32(pos + 4, true);
+    pos += 8;
+    const rowIndex = scanY >= 0 && scanY < height ? scanY : y;
+    let cPos = pos;
+
+    for (const ch of channels) {
+      const bpp = ch.pType === 2 ? 4 : 2;
+      for (let x = 0; x < width && cPos + bpp <= u8.length; x++) {
+        const val =
+          ch.pType === 2
+            ? dv.getFloat32(cPos, true)
+            : decodeFloat16(dv.getUint16(cPos, true));
+        cPos += bpp;
+        const dst = (rowIndex * width + x) * 4;
+        if (ch.name === "R") rgba[dst] = acesTonemapToByte(val, exposureEv);
+        else if (ch.name === "G") rgba[dst + 1] = acesTonemapToByte(val, exposureEv);
+        else if (ch.name === "B") rgba[dst + 2] = acesTonemapToByte(val, exposureEv);
+        else if (ch.name === "A") rgba[dst + 3] = Math.round(Math.min(1, Math.max(0, val)) * 255);
+      }
+    }
+    pos += dataSize;
+  }
+
+  return {
+    fileName,
+    format: `OpenEXR (${channels.map((c) => c.name).join("")} 16-bit Half-Float)`,
+    width,
+    height,
+    mips: [{ level: 0, width, height, rgba }],
+    fileSize: u8.length,
+  };
+}
+
+// 生成内置演示 OpenEXR (.EXR) 16-bit Half-Float 二进制环境光样本
+export function createDemoExrBytes(w = 64, h = 64): ArrayBuffer {
+  const enc = new TextEncoder();
+  const parts: number[] = [];
+  const pushBytes = (arr: number[] | Uint8Array) => {
+    for (let i = 0; i < arr.length; i++) parts.push(arr[i]);
+  };
+  const pushCStr = (s: string) => {
+    pushBytes(enc.encode(s));
+    parts.push(0);
+  };
+  const pushInt32 = (v: number) => {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setInt32(0, v, true);
+    pushBytes(b);
+  };
+
+  // Magic (20000630) + Version (2)
+  pushInt32(20000630);
+  pushInt32(2);
+
+  // channels attribute (B, G, R in HALF=1)
+  pushCStr("channels");
+  pushCStr("chlist");
+  const chBytes: number[] = [];
+  for (const cn of ["B", "G", "R"]) {
+    chBytes.push(cn.charCodeAt(0), 0);
+    // pType = 1 (HALF), pLinear = 0, reserved = 0, xSampling = 1, ySampling = 1
+    const meta = new Uint8Array(16);
+    const mdv = new DataView(meta.buffer);
+    mdv.setInt32(0, 1, true);
+    mdv.setInt32(8, 1, true);
+    mdv.setInt32(12, 1, true);
+    for (const b of meta) chBytes.push(b);
+  }
+  chBytes.push(0);
+  pushInt32(chBytes.length);
+  pushBytes(chBytes);
+
+  // dataWindow attribute (box2i: 0, 0, w-1, h-1)
+  pushCStr("dataWindow");
+  pushCStr("box2i");
+  pushInt32(16);
+  pushInt32(0);
+  pushInt32(0);
+  pushInt32(w - 1);
+  pushInt32(h - 1);
+
+  // End of header
+  parts.push(0);
+
+  // Line offset table (h * 8 bytes)
+  for (let i = 0; i < h * 8; i++) parts.push(0);
+
+  // Float32 to Float16 encoder for demo HDR sun sky
+  const toHalf = (val: number): number => {
+    if (val <= 0) return 0;
+    const e = Math.floor(Math.log2(val));
+    const exp = Math.min(30, Math.max(1, e + 15));
+    const mant = Math.round((val / Math.pow(2, exp - 15) - 1) * 1024);
+    return (exp << 10) | Math.min(1023, Math.max(0, mant));
+  };
+
+  const rowByteSize = w * 3 * 2;
+  for (let y = 0; y < h; y++) {
+    pushInt32(y);
+    pushInt32(rowByteSize);
+    const rowBuf = new Uint8Array(rowByteSize);
+    const rdv = new DataView(rowBuf.buffer);
+    let off = 0;
+    // B channel
+    for (let x = 0; x < w; x++) {
+      const bLinear = 0.25 + (1 - y / h) * 1.8;
+      rdv.setUint16(off, toHalf(bLinear), true);
+      off += 2;
+    }
+    // G channel
+    for (let x = 0; x < w; x++) {
+      const dist = Math.hypot(x - w * 0.5, y - h * 0.35) / (w * 0.25);
+      const sun = dist < 1 ? (1 - dist) * 4.5 : 0;
+      const gLinear = 0.15 + (y / h) * 0.9 + sun;
+      rdv.setUint16(off, toHalf(gLinear), true);
+      off += 2;
+    }
+    // R channel
+    for (let x = 0; x < w; x++) {
+      const dist = Math.hypot(x - w * 0.5, y - h * 0.35) / (w * 0.25);
+      const sun = dist < 1 ? (1 - dist) * 6.0 : 0;
+      const rLinear = 0.1 + (x / w) * 1.2 + sun;
+      rdv.setUint16(off, toHalf(rLinear), true);
+      off += 2;
+    }
+    pushBytes(rowBuf);
+  }
+
+  return new Uint8Array(parts).buffer;
+}
+
 // 生成内置演示 DXT5 .DDS 二进制纹理（含 2 级 Mipmap 与 Alpha 通道遮罩）
 export function createDemoDdsBytes(w = 64, h = 64): ArrayBuffer {
   const bw = w / 4;
@@ -728,15 +1047,30 @@ export default function TextureConverter({
       try {
         const buf = await file.arrayBuffer();
         const baseName = file.name.replace(/\.[^.]+$/, "");
-        const magic = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-        const magicStr =
-          magic.length === 4 ? String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) : "";
-        const isDds = /\.dds$/i.test(file.name) || magicStr === "DDS ";
-        const isVtf = /\.vtf$/i.test(file.name) || magicStr === "VTF\0";
+        const magic = new Uint8Array(buf, 0, Math.min(10, buf.byteLength));
+        const magic4 =
+          magic.length >= 4 ? String.fromCharCode(magic[0], magic[1], magic[2], magic[3]) : "";
+        const magic10 =
+          magic.length >= 10
+            ? String.fromCharCode(...Array.from(magic.subarray(0, 10)))
+            : "";
+        const isDds = /\.dds$/i.test(file.name) || magic4 === "DDS ";
+        const isVtf = /\.vtf$/i.test(file.name) || magic4 === "VTF\0";
+        const isExr =
+          /\.exr$/i.test(file.name) ||
+          (magic.length >= 4 && new DataView(buf).getUint32(0, true) === 20000630);
+        const isHdr =
+          /\.hdr$/i.test(file.name) ||
+          magic10.startsWith("#?RADIANCE") ||
+          magic10.startsWith("#?RGBE");
         const parsed = isDds
           ? parseDds(buf, baseName)
           : isVtf
           ? parseVtf(buf, baseName)
+          : isExr
+          ? parseExr(buf, baseName)
+          : isHdr
+          ? parseHdr(buf, baseName)
           : parseTga(buf, baseName);
         decodedList.push(parsed);
       } catch (e) {
@@ -763,6 +1097,15 @@ export default function TextureConverter({
     setError("");
     const buf = createDemoVtfBytes(64, 64);
     const parsed = parseVtf(buf, "hl2-hazard-stripe-vtf72");
+    setBatch([parsed]);
+    setActiveIdx(0);
+    setMipIdx(0);
+  }
+
+  function loadDemoExr() {
+    setError("");
+    const buf = createDemoExrBytes(64, 64);
+    const parsed = parseExr(buf, "studio-hdri-sun-sky-16f");
     setBatch([parsed]);
     setActiveIdx(0);
     setMipIdx(0);
@@ -840,17 +1183,17 @@ export default function TextureConverter({
             <input
               type="file"
               multiple
-              accept=".dds,.tga,.vtf,image/vnd-ms.dds,image/x-targa,image/x-tga,image/vnd.valve.source.texture"
+              accept=".dds,.tga,.vtf,.exr,.hdr,image/vnd-ms.dds,image/x-targa,image/x-tga,image/vnd.valve.source.texture,image/x-exr,image/vnd.radiance"
               className="hidden"
               onChange={(e) => e.target.files?.length && handleFiles(e.target.files)}
             />
             <span className="text-4xl">🎮</span>
             <span className="text-lg font-semibold">
-              Drop one or multiple .DDS / .VTF / .TGA texture files here (Batch Supported)
+              Drop one or multiple .DDS / .VTF / .EXR / .HDR / .TGA texture files here (Batch Supported)
             </span>
             <span className="text-sm text-slate-500">
               {primaryHint ||
-                "Supports DDS (DXT1-DXT5, BC1-BC5, DX10), Valve Source VTF (v7.0-v7.5) & RLE TGA · 100% Local In-Browser"}
+                "Supports DDS (DXT1-DXT5, BC1-BC5, DX10), Valve VTF, OpenEXR (.exr), Radiance (.hdr) & RLE TGA · 100% Local In-Browser"}
             </span>
           </label>
           <div className="flex flex-wrap justify-center gap-2.5">
@@ -867,6 +1210,13 @@ export default function TextureConverter({
               className="rounded-lg border border-amber-300 bg-amber-50/70 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
             >
               🟠 Load Demo Source Engine .VTF Texture (v7.2 DXT5)
+            </button>
+            <button
+              type="button"
+              onClick={loadDemoExr}
+              className="rounded-lg border border-sky-300 bg-sky-50/70 px-4 py-2 text-sm font-medium text-sky-900 hover:bg-sky-100"
+            >
+              ☀️ Load Demo OpenEXR (.EXR) 16-bit HDR Sky
             </button>
           </div>
         </div>
