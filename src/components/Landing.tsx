@@ -235,6 +235,9 @@ export default function Landing({ config }: { config: LandingConfig }) {
                 {link.label}
               </Link>
             ))}
+            <a href="/llms.txt" className="hover:text-slate-800 underline">
+              AI / LLMs.txt
+            </a>
           </div>
         </div>
       </footer>

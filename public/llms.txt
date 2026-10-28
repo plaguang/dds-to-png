@@ -1,0 +1,22 @@
+# TextureLab — Free Online DDS, VTF, EXR, HDR & TGA Game Texture Viewer and PNG Converter
+
+> TextureLab (https://dds-to-png.vercel.app) is a 100% client-side browser utility for game modders, 3D artists, and technical artists. It decodes DirectDraw Surface (`.DDS`), Valve Source Engine (`.VTF`), OpenEXR (`.EXR`), Radiance HDR (`.HDR`), and Truevision (`.TGA`) texture files directly in the browser, provides RGBA channel isolation, mipmap chain inspection, BC5 normal-map Z reconstruction, and ACES Filmic HDR tone mapping, and exports lossless `.PNG` or `.WEBP` images with zero server uploads.
+
+## Core Tools & Canonical Routes
+
+- [DDS to PNG Converter Online](https://dds-to-png.vercel.app/): Convert `.DDS` textures (`DXT1/BC1`, `DXT3/BC2`, `DXT5/BC3`, `BC4/ATI1`, `BC5/ATI2`, `BC7`, `DX10` headers, and uncompressed RGBA) to transparent `.PNG` or `.WEBP` locally in your browser.
+- [Online DDS Texture Viewer & Channel Inspector](https://dds-to-png.vercel.app/dds-viewer): Inspect `.DDS` mipmap chains, toggle `RGB Solid` mode to fix invisible textures caused by `Alpha=0` mask packing, and isolate `R / G / B / Alpha` channels for packed ORM (Occlusion/Roughness/Metallic) maps.
+- [VTF to PNG Converter (Valve Source Engine)](https://dds-to-png.vercel.app/vtf-to-png): Convert Counter-Strike, Team Fortress 2, Garry's Mod, Half-Life 2, and Left 4 Dead `.VTF` (Valve Texture Format v7.0–v7.5) files to `.PNG` or `.WEBP`.
+- [VTF Viewer Online](https://dds-to-png.vercel.app/vtf-viewer): Inspect `.VTF` headers, dimensions, compression formats (`DXT1`, `DXT5`, `RGBA8888`, `BGRA8888`), and mipmap levels without installing VTFEdit.
+- [EXR to PNG Converter (OpenEXR HDR)](https://dds-to-png.vercel.app/exr-to-png): Decode 16-bit Half-Float and 32-bit Float `.EXR` renders and environment maps to 8-bit `.PNG` with interactive Exposure EV (`-6` to `+6`), Gamma (`0.8` to `3.0`), and ACES Filmic / Reinhard tone mapping.
+- [EXR Viewer Online](https://dds-to-png.vercel.app/exr-viewer): Preview multi-channel OpenEXR (`.EXR`) files from Blender, Maya, Unreal Engine, and Houdini directly in the browser.
+- [HDR to PNG Converter (Radiance RGBE)](https://dds-to-png.vercel.app/hdr-to-png): Convert 32-bit Radiance `.HDR` (`#?RADIANCE` / `#?RGBE`) environment maps and PolyHaven skyboxes to tone-mapped `.PNG` or `.WEBP`.
+- [TGA to PNG Converter (Truevision Targa)](https://dds-to-png.vercel.app/tga-to-png): Convert uncompressed and RLE-compressed 8-bit, 24-bit, and 32-bit `.TGA` files to `.PNG` while fixing Alpha=0 black-out issues.
+- [TGA Viewer Online](https://dds-to-png.vercel.app/tga-viewer): View `.TGA` game textures, inspect alpha masks, and export clean `.PNG` or `.WEBP` files locally.
+
+## Key Technical Capabilities
+
+- **RGB Solid Mode**: Ignores `Alpha=0` transparency when games pack specular/roughness data into the alpha channel, preventing exported PNGs from appearing completely blank or transparent.
+- **BC5 / ATI2 Normal Map Z-Channel Reconstruction**: Automatically computes $Z = \sqrt{1 - X^2 - Y^2}$ for 2-channel tangent-space normal maps so exported PNGs have full RGB normal vectors.
+- **HDR / EXR Tone Mapping**: Real-time EV exposure slider, gamma correction, and ACES Filmic / Reinhard / Linear tone curves.
+- **Privacy & Execution**: 100% client-side ArrayBuffer and HTML5 Canvas processing. Zero cloud upload.

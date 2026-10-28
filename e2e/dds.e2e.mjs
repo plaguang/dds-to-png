@@ -151,10 +151,15 @@ async function run() {
     "/tga-viewer",
     "/sitemap.xml",
     "/robots.txt",
+    "/llms.txt",
   ]) {
     const res = await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
     assert(res && res.status() === 200, `路由 ${route} 返回 HTTP 200`);
   }
+
+  await page.goto(`${BASE}/?utm_source=chatgpt.com`, { waitUntil: "networkidle" });
+  const aiAttr = await page.locator("html").getAttribute("data-ai-referral");
+  assert(aiAttr === "openai:chatgpt", `GEOInflow AI 引荐归因成功识别 html[data-ai-referral="${aiAttr}"]`);
 
   assert(pageErrors.length === 0, `无页面 JS 错误 (${pageErrors.length})`);
 
