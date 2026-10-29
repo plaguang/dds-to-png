@@ -161,6 +161,15 @@ async function run() {
   const aiAttr = await page.locator("html").getAttribute("data-ai-referral");
   assert(aiAttr === "openai:chatgpt", `GEOInflow AI 引荐归因成功识别 html[data-ai-referral="${aiAttr}"]`);
 
+  // 验证 /vtf-to-png 与 /exr-viewer 首屏自动预加载对应的 VTF / EXR 交互式纹理检查器
+  await page.goto(`${BASE}/vtf-to-png`, { waitUntil: "networkidle" });
+  const vtfAutoMeta = await page.getByTestId("texture-meta").innerText();
+  assert(vtfAutoMeta.includes("VTF v7.2 (DXT5)"), `/vtf-to-png 首屏自动预加载 VTF 纹理 (${vtfAutoMeta.replace(/\s+/g, " ")})`);
+
+  await page.goto(`${BASE}/exr-viewer`, { waitUntil: "networkidle" });
+  const exrAutoMeta = await page.getByTestId("texture-meta").innerText();
+  assert(exrAutoMeta.includes("OpenEXR"), `/exr-viewer 首屏自动预加载 OpenEXR 纹理 (${exrAutoMeta.replace(/\s+/g, " ")})`);
+
   assert(pageErrors.length === 0, `无页面 JS 错误 (${pageErrors.length})`);
 
   await browser.close();

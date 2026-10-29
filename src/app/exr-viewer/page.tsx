@@ -19,6 +19,7 @@ export default function ExrViewerPage() {
         primaryHint:
           "Drop .EXR files to inspect resolution, floating-point channels, and tone-mapped preview",
         defaultChannel: "rgb",
+        autoLoadDemo: "exr",
         jsonLdName: "EXR Viewer Online",
         jsonLdDescription:
           "Browser-based OpenEXR (.exr) image viewer with ACES Filmic tone-mapping and R/G/B/Alpha channel inspection.",

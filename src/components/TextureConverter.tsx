@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { track } from "@vercel/analytics";
+import { trackToolEvent } from "@/lib/analytics";
 
 export type MipLevel = {
   level: number;
@@ -1022,9 +1022,11 @@ function renderMipToCanvas(mip: MipLevel, channel: ChannelView, flipY: boolean, 
 export default function TextureConverter({
   primaryHint,
   defaultChannel = "rgba",
+  autoLoadDemo,
 }: {
   primaryHint?: string;
   defaultChannel?: ChannelView;
+  autoLoadDemo?: "dds" | "vtf" | "exr";
 } = {}) {
   const [batch, setBatch] = useState<DecodedTexture[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -1035,6 +1037,22 @@ export default function TextureConverter({
   const [zoom, setZoom] = useState<number>(1);
   const [error, setError] = useState("");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!autoLoadDemo) return;
+    if (autoLoadDemo === "vtf") {
+      const buf = createDemoVtfBytes(64, 64);
+      setBatch([parseVtf(buf, "hl2-hazard-stripe-vtf72")]);
+    } else if (autoLoadDemo === "exr") {
+      const buf = createDemoExrBytes(64, 64);
+      setBatch([parseExr(buf, "studio-hdri-sun-sky-16f")]);
+    } else {
+      const buf = createDemoDdsBytes(64, 64);
+      setBatch([parseDds(buf, "skyrim-armor-specular-dxt5")]);
+    }
+    setActiveIdx(0);
+    setMipIdx(0);
+  }, [autoLoadDemo]);
 
   const tex = batch[activeIdx] ?? null;
 
@@ -1081,6 +1099,10 @@ export default function TextureConverter({
       setBatch(decodedList);
       setActiveIdx(0);
       setMipIdx(0);
+      trackToolEvent("texture_file_upload", {
+        files: decodedList.length,
+        format: decodedList[0].format,
+      });
     }
   }
 
@@ -1091,6 +1113,7 @@ export default function TextureConverter({
     setBatch([parsed]);
     setActiveIdx(0);
     setMipIdx(0);
+    trackToolEvent("texture_demo_load", { format: "DDS" });
   }
 
   function loadDemoVtf() {
@@ -1100,6 +1123,7 @@ export default function TextureConverter({
     setBatch([parsed]);
     setActiveIdx(0);
     setMipIdx(0);
+    trackToolEvent("texture_demo_load", { format: "VTF" });
   }
 
   function loadDemoExr() {
@@ -1109,6 +1133,7 @@ export default function TextureConverter({
     setBatch([parsed]);
     setActiveIdx(0);
     setMipIdx(0);
+    trackToolEvent("texture_demo_load", { format: "EXR" });
   }
 
   const currentMip = tex?.mips[Math.min(mipIdx, (tex?.mips.length ?? 1) - 1)] ?? null;
@@ -1123,6 +1148,10 @@ export default function TextureConverter({
     const c = canvasRef.current;
     if (!c || !tex) return;
     const ext = outFormat === "image/webp" ? "webp" : "png";
+    trackToolEvent(ext === "webp" ? "texture_download_webp" : "texture_download_png", {
+      format: tex.format,
+      channel,
+    });
     c.toBlob(
       (blob) => {
         if (!blob) return;
@@ -1140,6 +1169,7 @@ export default function TextureConverter({
 
   async function downloadBatchZip() {
     if (!batch.length) return;
+    trackToolEvent("texture_download_png", { batchCount: batch.length, channel });
     const ext = outFormat === "image/webp" ? "webp" : "png";
     const offscreen = document.createElement("canvas");
     const zipEntries: { name: string; data: Uint8Array }[] = [];
@@ -1225,6 +1255,23 @@ export default function TextureConverter({
         </div>
       ) : (
         <div className="flex flex-col gap-4">
+          {/* 常驻快速替换/上传条，方便在自动预加载 Viewer 页面直接拖入自己的贴图 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/40 px-4 py-2.5 text-xs">
+            <span className="font-medium text-slate-700">
+              🎮 Inspecting: <b className="text-emerald-950">{tex.fileName}</b> ({tex.format}) — drop or select your own texture files:
+            </span>
+            <label className="cursor-pointer rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white transition hover:bg-emerald-700">
+              📂 Upload .DDS / .VTF / .EXR / .HDR / .TGA
+              <input
+                type="file"
+                multiple
+                accept=".dds,.tga,.vtf,.exr,.hdr,image/vnd-ms.dds,image/x-targa,image/x-tga,image/vnd.valve.source.texture,image/x-exr,image/vnd.radiance"
+                className="sr-only"
+                onChange={(e) => e.target.files?.length && handleFiles(e.target.files)}
+              />
+            </label>
+          </div>
+
           {/* 多文件批量切换栏 */}
           {batch.length > 1 && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs">

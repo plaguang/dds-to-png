@@ -19,6 +19,7 @@ export default function VtfViewerPage() {
         primaryHint:
           "Drop .VTF files to inspect format version, mipmap chain, and R/G/B/Alpha channels",
         defaultChannel: "rgb",
+        autoLoadDemo: "vtf",
         jsonLdName: "VTF Viewer Online",
         jsonLdDescription:
           "Free browser-based Valve Texture File (.vtf) viewer and mipmap inspector with RGBA channel isolation.",

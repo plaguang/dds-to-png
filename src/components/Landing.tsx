@@ -8,6 +8,7 @@ export interface LandingConfig {
   subtitle: string;
   primaryHint: string;
   defaultChannel?: "rgba" | "rgb" | "alpha" | "r" | "g" | "b";
+  autoLoadDemo?: "dds" | "vtf" | "exr";
   whyTitle: string;
   whyItems: { title: string; body: string }[];
   steps: { title: string; body: string }[];
@@ -117,6 +118,7 @@ export default function Landing({ config }: { config: LandingConfig }) {
           <TextureConverter
             primaryHint={config.primaryHint}
             defaultChannel={config.defaultChannel}
+            autoLoadDemo={config.autoLoadDemo}
           />
           <FeedbackBar toolName="Texture Converter & Viewer" theme="light" />
         </section>

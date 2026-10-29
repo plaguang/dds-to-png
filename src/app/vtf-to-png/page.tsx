@@ -19,6 +19,7 @@ export default function VtfToPngPage() {
         primaryHint:
           "Drop one or multiple .VTF files (DXT1, DXT3, DXT5, RGBA8888, BGRA8888, BGR888) — Zero Server Upload",
         defaultChannel: "rgba",
+        autoLoadDemo: "vtf",
         jsonLdName: "VTF to PNG Converter Online",
         jsonLdDescription:
           "Browser-based Valve Texture File (.vtf) to PNG/WebP converter with RGB/Alpha channel isolation, mipmap chain preview, and batch ZIP download.",

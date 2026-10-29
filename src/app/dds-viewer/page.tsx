@@ -16,6 +16,7 @@ const config: LandingConfig = {
   primaryHint:
     "Drop a .dds file to inspect header FourCC, dimensions, mipmap pyramid, and individual R/G/B/A channels.",
   defaultChannel: "rgba",
+  autoLoadDemo: "dds",
   whyTitle: "Built for Modders, 3D Artists & Technical Artists",
   whyItems: [
     {

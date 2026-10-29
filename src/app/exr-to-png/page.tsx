@@ -19,6 +19,7 @@ export default function ExrToPngPage() {
         primaryHint:
           "Drop one or multiple .EXR files (16-bit Half-Float or 32-bit Float) — Zero Server Upload",
         defaultChannel: "rgba",
+        autoLoadDemo: "exr",
         jsonLdName: "EXR to PNG Converter Online",
         jsonLdDescription:
           "Client-side OpenEXR (.exr) to PNG/WebP converter with ACES Filmic tone-mapping, R/G/B/A channel isolation, and batch ZIP export.",
